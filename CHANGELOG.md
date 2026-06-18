@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Heartbeat/notificação: roteamento para o chat de origem — 2026-06-18
+
+#### Causa raiz
+Notificações de delegação (heartbeat, conclusão de tarefa) chegavam sempre no
+chat do owner (`8890643175`), não na conversa atual (ex. `7978617919`). Dois
+problemas: (1) `delegation_mcp.py::_delegate()` fixava
+`notify_chat_id=notify.owner_chat()`; (2) — mais profundo — o binário `garra`
+**nunca repassava o contexto da conversa** ao servidor MCP `delegation`
+(`McpTool::execute` enviava só os argumentos do modelo), então a camada Python
+não tinha como saber o chat de origem.
+
+#### Fixed / Added
+- **Rust** (`crates/garraia-agents/src/mcp/tool_bridge.rs`): injeta
+  `garra_origin_chat_id` (= user id autenticado do Telegram, == chat_id em chat
+  privado) e `garra_session_id` nas chamadas de ferramentas `delegation__*`,
+  **sobrescrevendo** qualquer valor do modelo (sem spoofing). Escopo restrito a
+  `delegation__` (outros servidores MCP podem rejeitar args desconhecidos). 5
+  testes unit.
+- **Python** (`ops/garra-delegation/`): `_resolve_routing()` — a origem
+  autenticada/autorizada SEMPRE vence; `owner_chat()` só como fallback
+  (`delivery_scope='fallback_owner'`). `create_task` persiste `origin_chat_id`,
+  `origin_channel`, `bot_id`, `message_thread_id`, `delivery_scope`. `monitor.py`
+  entrega ao `task.notify_chat_id` e valida **chat_mismatch** (via
+  `delivered_chat_id` real do Telegram) antes de marcar `delivered`. 7 testes
+  (`tests/test_heartbeat_routing.py`).
+
+#### Validação E2E (real)
+- Monitor de produção → mensagem real `message_id` **312** no chat **7978617919**
+  (não no owner). Caminho MCP (FastMCP `schedule_heartbeat` com origem injetada)
+  → `message_id` **313** no chat **7978617919**, `delivery_scope=origin`.
+
+#### Deploy / rollback
+- Binário recompilado `ca1a981e…` (preserva a guarda anti-alucinação) e
+  implantado; gateway reiniciado. Rollback do binário:
+  `cp ~/garra-fix/backups/antihallucination-20260618-120937/garraia.binary.bak ~/.local/bin/garraia && systemctl --user restart garraia.service`.
+  Backup desta correção: `~/garra-fix/backups/heartbeat-routing-20260618-184748/`.
+
 ### Anti-hallucination output guard (operacional) — 2026-06-18
 
 Tag operacional: `anti-hallucination-guard-2026-06-18`.

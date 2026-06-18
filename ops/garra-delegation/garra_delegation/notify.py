@@ -50,6 +50,24 @@ def get_me():
     return _api("getMe")
 
 
+_BOT_ID_CACHE = []
+
+
+def bot_id():
+    """Telegram bot id (numeric), cached. None if unreachable."""
+    if _BOT_ID_CACHE:
+        return _BOT_ID_CACHE[0]
+    try:
+        me = get_me()
+        bid = (me.get("result") or {}).get("id")
+        if bid is not None:
+            _BOT_ID_CACHE.append(str(bid))
+            return _BOT_ID_CACHE[0]
+    except Exception:
+        pass
+    return None
+
+
 def mask_chat(chat_id):
     """Mask a chat/destination id, keeping only the last 4 chars."""
     s = str(chat_id or "")
@@ -75,8 +93,13 @@ def send_message(chat_id, text, only_authorized=True):
     except Exception as e:  # network / HTTP error
         return {"ok": False, "message_id": None, "chat_masked": masked, "error": str(e)[:300]}
     ok = bool(raw.get("ok"))
-    mid = (raw.get("result") or {}).get("message_id") if ok else None
+    result = raw.get("result") or {}
+    mid = result.get("message_id") if ok else None
+    # Real chat the message landed in — used to detect chat_mismatch before
+    # ever recording a notification as "delivered".
+    delivered_chat_id = str((result.get("chat") or {}).get("id")) if ok and result.get("chat") else None
     return {"ok": ok, "message_id": mid, "chat_masked": masked,
+            "delivered_chat_id": delivered_chat_id,
             "error": None if ok else str(raw.get("description") or raw)[:300],
             "result": raw}
 

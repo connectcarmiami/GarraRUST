@@ -63,14 +63,19 @@ def _notify(task, text, kind="final"):
     ts.record_notification(tid, "delivery_pending", chat_masked=masked,
                            attempt=attempt, kind=kind)
     res = notify.send_message(chat, text)
-    if res.get("ok") and res.get("message_id") is not None:
+    delivered = bool(res.get("ok") and res.get("message_id") is not None)
+    # chat_mismatch: Telegram confirmed a send, but to a DIFFERENT chat than the
+    # task's notify_chat_id. Never record such a send as delivered.
+    mismatch = delivered and res.get("delivered_chat_id") not in (None, str(chat))
+    if delivered and not mismatch:
         ts.record_notification(tid, "delivered", chat_masked=masked,
                                message_id=res["message_id"], attempt=attempt, kind=kind)
         return {"delivered": True, "exhausted": False, "message_id": res["message_id"]}
+    err = "chat_mismatch" if mismatch else res.get("error")
     ts.record_notification(tid, "delivery_failed", chat_masked=masked,
-                           attempt=attempt, error=res.get("error"), kind=kind)
+                           attempt=attempt, error=err, kind=kind)
     return {"delivered": False, "exhausted": attempt >= ts.MAX_DELIVERY_ATTEMPTS,
-            "message_id": None, "error": res.get("error")}
+            "message_id": None, "error": err}
 
 
 def scan_once(verbose=True):

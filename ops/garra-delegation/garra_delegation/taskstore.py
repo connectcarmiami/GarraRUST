@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     check_count INTEGER DEFAULT 0,
     last_checked_at TEXT,
     last_checked_status TEXT,
-    next_check_at TEXT
+    next_check_at TEXT,
+    origin_chat_id TEXT,
+    origin_channel TEXT,
+    bot_id TEXT,
+    message_thread_id TEXT,
+    delivery_scope TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_dedup ON tasks(dedup_key);
@@ -123,6 +128,11 @@ _MIGRATIONS = [
     ("tasks", "last_checked_at", "TEXT"),
     ("tasks", "last_checked_status", "TEXT"),
     ("tasks", "next_check_at", "TEXT"),
+    ("tasks", "origin_chat_id", "TEXT"),
+    ("tasks", "origin_channel", "TEXT"),
+    ("tasks", "bot_id", "TEXT"),
+    ("tasks", "message_thread_id", "TEXT"),
+    ("tasks", "delivery_scope", "TEXT"),
 ]
 
 
@@ -194,8 +204,15 @@ def find_active_by_dedup(c, key):
 
 def create_task(requested_by, assigned_agent, capability, payload,
                 timeout_secs=600, parent_task_id=None, correlation_id=None,
-                notify_chat_id=None, max_retries=1, dedup_window=900, monitor=True):
-    """Create a task with dedup. Returns (task_dict, reused: bool)."""
+                notify_chat_id=None, max_retries=1, dedup_window=900, monitor=True,
+                origin_chat_id=None, origin_channel=None, bot_id=None,
+                message_thread_id=None, delivery_scope=None):
+    """Create a task with dedup. Returns (task_dict, reused: bool).
+
+    ``notify_chat_id`` is the chat the monitor/heartbeat will deliver to — it
+    should be the conversation's real origin (``origin_chat_id``) and only fall
+    back to the owner chat when there is no origin (``delivery_scope='fallback_owner'``).
+    """
     init_db()
     c = connect()
     key = dedup_key(requested_by, assigned_agent, payload, dedup_window)
@@ -213,12 +230,19 @@ def create_task(requested_by, assigned_agent, capability, payload,
             c.execute("""INSERT INTO tasks
                 (task_id,parent_task_id,correlation_id,requested_by,assigned_agent,capability,
                  payload,dedup_key,status,retry_count,max_retries,notify_chat_id,monitor_active,
-                 created_at,timeout_at,timeout_secs)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 created_at,timeout_at,timeout_secs,
+                 origin_chat_id,origin_channel,bot_id,message_thread_id,delivery_scope)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                       (tid, parent_task_id, cid, requested_by, assigned_agent, capability,
                        payload, key, "queued", 0, max_retries, notify_chat_id,
-                       1 if monitor else 0, ts, timeout_at, timeout_secs))
-            add_event(c, tid, "created", f"agent={assigned_agent} cap={capability}")
+                       1 if monitor else 0, ts, timeout_at, timeout_secs,
+                       origin_chat_id, origin_channel,
+                       str(bot_id) if bot_id is not None else None,
+                       str(message_thread_id) if message_thread_id is not None else None,
+                       delivery_scope))
+            add_event(c, tid, "created",
+                      f"agent={assigned_agent} cap={capability} scope={delivery_scope} "
+                      f"notify={notify_chat_id} origin={origin_chat_id}")
             row = dict(c.execute("SELECT * FROM tasks WHERE task_id=?", (tid,)).fetchone())
     finally:
         c.close()
@@ -374,6 +398,9 @@ def evidence(task):
         "retry_count": task["retry_count"], "worker_pid": task["worker_pid"],
         "has_result": bool(task["result"]), "error": task["error"],
         "provenance": task["provenance"] if "provenance" in task.keys() else None,
+        "notify_chat_id": task["notify_chat_id"],
+        "origin_chat_id": task["origin_chat_id"] if "origin_chat_id" in task.keys() else None,
+        "delivery_scope": task["delivery_scope"] if "delivery_scope" in task.keys() else None,
     }
 
 
