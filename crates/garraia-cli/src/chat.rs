@@ -766,16 +766,17 @@ pub async fn run_chat(
             ) => result,
         };
 
-        // Drain any remaining deltas from the channel
-        while let Ok(delta) = rx.try_recv() {
-            print!("{delta}");
-            io::stdout().flush()?;
-        }
+        // Drain (and DISCARD) the streamed deltas: they are an un-guarded live
+        // preview of raw model tokens. The authoritative text is the
+        // guard-checked `full_response` returned below — printing that instead
+        // ensures a fabricated/unverified identifier never remains on screen.
+        while rx.try_recv().is_ok() {}
 
         match result {
             Ok(full_response) => {
-                // Print any remaining text not sent via streaming
-                println!();
+                // Print the guard-checked final answer (not the raw deltas).
+                println!("{full_response}");
+                io::stdout().flush()?;
 
                 // Add assistant response to history
                 history.push(ChatMessage {

@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Anti-hallucination output guard (operacional) — 2026-06-18
+
+Tag operacional: `anti-hallucination-guard-2026-06-18`.
+
+#### Causa raiz
+O Garra (deepseek-v4-flash via Telegram) **imprimia identificadores de tarefa
+inventados como se fossem reais** — ex. `t-7f4e2c9a1b8d` e `t-8a3f5d7e2c9b`, numa
+tabela "RELATÓRIO DE CRIAÇÃO DE TAREFAS" com `status: accepted` — sem nunca
+chamar nenhuma ferramenta. Esses ids existiam **0×** no store autorizado
+`tasks.db` e só apareciam em `sessions.db` (log de conversa). O "contrato
+anti-alucinação" anterior era **apenas prompt**; o modelo controla o próprio
+texto e o ignorava. Só o **runtime** pode impedir isso.
+
+#### Added
+- `garraia-agents`: módulo `output_guard` (sem dependências) que, por turno,
+  liga todo identificador (`t-<hex>`, `corr-<alnum>`) na resposta final do modelo
+  a **evidência real** — o conjunto de ids vindos dos `ContentBlock::ToolResult`
+  do turno + os que o usuário digitou. Ids sem evidência são **redigidos**
+  (`ID-NÃO-VERIFICADO`); modo `GARRA_OUTPUT_GUARD = redact|block|off`
+  (default `redact`). Fiação em `runtime.rs` cobre todos os retornos de texto
+  (streaming e não-streaming). 10 testes unit + 2 E2E pelo loop real.
+- Camada Python (snapshot em `ops/garra-delegation/`): máquina de estados;
+  `succeeded` **exige** resultado persistido; `verify_identifier`
+  (PASS/UNVERIFIED); ledger de entrega com `message_id` real; trava de polling
+  (`register_check` → **BLOCKED** em vez de loop); `delegation__verify_task` e
+  `delegation__schedule_heartbeat` (heartbeat real e consultável). 13 testes.
+- `docs/anti-hallucination-guard-2026-06-18.md`: relatório completo.
+
+#### Fixed
+- **IDs inventados bloqueados**: o binário em produção (sha `712625da…`) redige
+  ids fabricados antes de entregá-los ao usuário e de persistir o turno —
+  verificado ao vivo (modelo inventou um id → entregue `ID-NÃO-VERIFICADO`).
+- `garra chat` (REPL) passa a exibir a resposta **guardada** em vez dos deltas
+  crus de streaming (a única superfície que ainda vazava o texto não-redigido).
+
+#### Validação E2E
+- O monitor de produção entregou **duas notificações automáticas** no chat
+  autorizado com `message_id` **283** e **284** persistidos no ledger
+  (`delivery_pending → delivered`).
+
+#### Rollback
+- Backup completo em `~/garra-fix/backups/antihallucination-20260618-120937/`
+  (DBs WAL-safe, código Python, units systemd, **binário antigo**
+  `garraia.binary.bak`). Reverter binário:
+  `cp …/garraia.binary.bak ~/.local/bin/garraia && systemctl --user restart garraia.service`.
+  Desligar só a guarda (sem rebuild): `GARRA_OUTPUT_GUARD=off` no
+  `garraia.service` + restart.
+
+#### Pendência conhecida (cosmética)
+- No streaming do Telegram, um delta intermediário pode exibir o id por ~1s
+  antes da **edição final já redigida**; o estado final entregue e o registro
+  persistido são limpos. Eliminar o transitório exigiria redigir token a token
+  (ids podem ser partidos entre deltas) — fora de escopo.
+
 ## [0.2.1] - 2026-05-14
 
 ### Auto-update pipeline — fixes 404 on `garraia update`

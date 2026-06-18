@@ -16,6 +16,7 @@ pub mod multi_agent;
 pub mod ollama;
 pub mod openai;
 pub mod orchestrator;
+pub mod output_guard;
 pub mod persona;
 pub mod provider_resilience;
 pub mod providers;

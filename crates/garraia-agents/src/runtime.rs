@@ -4,6 +4,7 @@
 // git blame on a 1.9kloc file — inner allow at module scope.
 #![allow(clippy::items_after_test_module)]
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
@@ -19,6 +20,7 @@ use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
 use crate::execution_budget::ExecutionBudget;
 use crate::memory_extractor::LlmMemoryExtractor;
+use crate::output_guard;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
@@ -719,7 +721,10 @@ impl AgentRuntime {
                 {
                     warn!("failed to store turn in memory: {}", e);
                 }
-                return Ok(final_text);
+                return Ok(crate::output_guard::guard(
+                    &final_text,
+                    &build_verified_ids(user_text, &messages),
+                ));
             }
 
             // Agent chose to call tools — log which ones
@@ -966,7 +971,10 @@ impl AgentRuntime {
                 }
 
                 budget.resetar_turno();
-                return Ok(final_text);
+                return Ok(crate::output_guard::guard(
+                    &final_text,
+                    &build_verified_ids(user_text, &messages),
+                ));
             }
 
             // Append the assistant's response (including tool_use blocks) to history
@@ -1240,6 +1248,14 @@ impl AgentRuntime {
 
         let mut full_response = String::new();
 
+        // Anti-hallucination guard: per-turn set of identifiers backed by REAL
+        // evidence (the tool results collected below + the identifiers the user
+        // themselves typed). Before returning, the output guard redacts any
+        // operational id in the reply that is absent from this set, so a
+        // fabricated `t-…`/`corr-…` can never be presented to the user as real.
+        let mut verified_ids: HashSet<String> = HashSet::new();
+        output_guard::collect_verified_ids(user_text, &mut verified_ids);
+
         let mut budget = match self.max_tool_calls {
             Some(limit) => ExecutionBudget::com_limite(limit),
             None => ExecutionBudget::padrao(),
@@ -1352,7 +1368,7 @@ impl AgentRuntime {
                             warn!("failed to store turn in memory: {}", e);
                         }
 
-                        return Ok(full_response);
+                        return Ok(output_guard::guard(&full_response, &verified_ids));
                     }
 
                     // Build assistant response with text + tool_use blocks
@@ -1416,6 +1432,10 @@ impl AgentRuntime {
                             None => ToolOutput::error(format!("unknown tool: {}", name)),
                         };
 
+                        // Anti-hallucination: harvest ids surfaced by this REAL
+                        // tool result so the model may legitimately cite them.
+                        output_guard::collect_verified_ids(&output.content, &mut verified_ids);
+
                         // GAR-187: pause agent loop if tool requires user confirmation
                         if output.requires_confirmation {
                             tracing::info!(session = %session_id, "agent paused (streaming): awaiting user confirmation");
@@ -1442,7 +1462,7 @@ impl AgentRuntime {
                     if let Some(confirmation_msg) = confirmation_response {
                         let _ = delta_tx.send(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
-                        return Ok(full_response);
+                        return Ok(output_guard::guard(&full_response, &verified_ids));
                     }
 
                     // Add separator between iterations
@@ -1487,7 +1507,7 @@ impl AgentRuntime {
                             warn!("failed to store turn in memory: {}", e);
                         }
 
-                        return Ok(full_response);
+                        return Ok(output_guard::guard(&full_response, &verified_ids));
                     }
 
                     messages.push(ChatMessage {
@@ -1535,6 +1555,9 @@ impl AgentRuntime {
                                 None => ToolOutput::error(format!("unknown tool: {}", name)),
                             };
 
+                            // Anti-hallucination: harvest ids from this REAL result.
+                            output_guard::collect_verified_ids(&output.content, &mut verified_ids);
+
                             // GAR-187: pause if tool requires user confirmation
                             if output.requires_confirmation {
                                 tracing::info!(session = %session_id, "agent paused (streaming fallback): awaiting user confirmation");
@@ -1562,7 +1585,7 @@ impl AgentRuntime {
                     if let Some(confirmation_msg) = confirmation_response {
                         let _ = delta_tx.send(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
-                        return Ok(full_response);
+                        return Ok(output_guard::guard(&full_response, &verified_ids));
                     }
                 }
             }
@@ -1904,6 +1927,26 @@ fn trim_messages_to_budget(
             }
         }
     }
+}
+
+/// Build the per-turn verified-identifier set (anti-hallucination) from the
+/// user's own message plus every tool-result block already accumulated in
+/// `messages`. Only `ContentBlock::ToolResult` content is trusted — assistant
+/// prose is never a source of evidence, so a fabricated id from a prior model
+/// turn is never whitelisted.
+fn build_verified_ids(user_text: &str, messages: &[ChatMessage]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    crate::output_guard::collect_verified_ids(user_text, &mut set);
+    for m in messages {
+        if let MessagePart::Parts(parts) = &m.content {
+            for p in parts {
+                if let ContentBlock::ToolResult { content, .. } = p {
+                    crate::output_guard::collect_verified_ids(content, &mut set);
+                }
+            }
+        }
+    }
+    set
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
