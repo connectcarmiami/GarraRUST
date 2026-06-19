@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### check_task auditável + monitor sem inferência de timeout + contrato — 2026-06-19
+
+#### Investigação "output guard flaky no Telegram" → guard correto
+Reproduzido o caminho streaming (Telegram) de forma determinística via
+`/v1/chat/completions stream:true` (mesmo `process_message_streaming_with_agent_config`):
+`delegation__list_tasks` → 15 task_ids reais, **0 redações** no texto guardado
+persistido. O guard NÃO está quebrado: ids reais do MESMO turno passam; a redação
+observada era o modelo citando ids de MEMÓRIA (turnos anteriores, sem rechamar
+ferramenta) → corretamente redigido (req 5). A "task de 02:30" citada não existe
+em `tasks.db` (invenção corretamente redigida). Mitigação: regra de re-consulta no
+system prompt (já implantada). **Gap conhecido:** o SSE de `/v1/chat/completions`
+emite deltas crus (não guardados); o Telegram aplica a guarda na edição final.
+
+#### Added
+- `delegation__check_task` agora inclui bloco **AUDITORIA** mascarado e sem
+  segredos: `task_id` real, `status`, `has_result`, `created_at`, `completed_at`,
+  `error`, `result_ref`/`result_summary`, `origin_chat_id_masked` (`7978617***`),
+  `notify_chat_id_masked`, `chat_ids_match`, `delivery_scope`, `message_id_present`
+  + `message_id`, `chat_ok`. Id inexistente → `verdict: UNVERIFIED`.
+  (`taskstore.audit_metadata` + `notify.mask_chat_audit`).
+- `docs/SKILL_CONTRATO_ANTI_ALUCINACAO.md`: contrato sincronizado com runtime/config.
+- `ops/garra-delegation/tests/test_audit_monitor.py`: auditoria mascarada +
+  monitor sem inferência de timeout (9 checks).
+
+#### Fixed
+- `monitor.py`: `timed_out` **nunca** inferido de `timeout_at` — só por worker
+  morto (pid ausente) + heartbeat parado, com re-leitura fresca e proteção contra
+  corrida (`InvalidTransition` engolido) para o scan não abortar.
+
+#### Validação
+- Alex E2E real: `t-098d36040642` succeeded, result "ok, sou o Alex.",
+  origin==notify==`7978617***`, scope=origin, message_id explicitamente ausente.
+- Smokes: `list_tasks`/`ask_flash`/`check_task` exibem ids reais (sem redação);
+  `t-falso123` e `t-503bb9c8373g` (parecido) bloqueados.
+
+
 ### Output guard: IDs reais de delegação exibíveis (contrato de teste) — 2026-06-18
 
 Investigação da queixa "o guard redige task_id/correlation_id reais". **Não havia

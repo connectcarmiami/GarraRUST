@@ -74,6 +74,17 @@ def mask_chat(chat_id):
     return ("*" * max(0, len(s) - 4)) + s[-4:] if s else "(desconhecido)"
 
 
+def mask_chat_audit(chat_id, keep=7):
+    """Audit-friendly mask keeping the FIRST `keep` chars + '***' (ex.:
+    7978617919 -> 7978617***). Hides the tail; never a secret/token."""
+    s = str(chat_id or "")
+    if not s:
+        return None
+    if len(s) <= keep:
+        return s  # already short; nothing meaningful to hide
+    return s[:keep] + "***"
+
+
 def send_message(chat_id, text, only_authorized=True):
     """Send a Telegram message and return a STRUCTURED delivery result.
 

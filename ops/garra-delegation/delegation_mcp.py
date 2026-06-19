@@ -194,6 +194,9 @@ def check_task(task_id: str) -> str:
     ld = ts.last_delivered(task_id)
     if ld:
         head += f"entrega Telegram: message_id {ld['message_id']} para {ld['chat_masked']}\n"
+    # Auditoria mascarada, sem segredos (task_id real, status, chats mascarados,
+    # chat_ids_match, delivery_scope, message_id presente/ausente, chat_ok).
+    head += "AUDITORIA: " + json.dumps(ts.audit_metadata(task_id), ensure_ascii=False) + "\n"
     return head + _ev(t)
 
 

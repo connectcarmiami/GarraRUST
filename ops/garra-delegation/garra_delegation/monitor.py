@@ -85,10 +85,19 @@ def scan_once(verbose=True):
         tid = t["task_id"]
         status = t["status"]
 
-        # 1) dead-worker detection -> timed_out
+        # 1) dead-worker detection -> timed_out.
+        #    NEVER infer timed_out from timeout_at — only from a REAL dead worker
+        #    (pid gone) + stale heartbeat. Re-read status fresh immediately before
+        #    transitioning so a task that succeeded mid-scan is NOT clobbered, and
+        #    swallow InvalidTransition so one racing task never aborts the cycle.
         if status in ("accepted", "running") and not _pid_alive(t["worker_pid"]) \
                 and _age(t["last_heartbeat_at"]) > STALE_HEARTBEAT_SECS:
-            ts.mark_timed_out(tid, "worker desapareceu (pid morto, heartbeat parado)")
+            fresh = ts.get_task(tid)
+            if fresh and fresh["status"] in ("accepted", "running"):
+                try:
+                    ts.mark_timed_out(tid, "worker desapareceu (pid morto, heartbeat parado)")
+                except ts.InvalidTransition:
+                    pass  # raced to terminal between the snapshot and now — leave it
             t = ts.get_task(tid); status = t["status"]
 
         # 2) terminal -> final delivery; deactivate ONLY when delivery is
