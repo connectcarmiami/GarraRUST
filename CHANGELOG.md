@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Laundering fechado + SSE guardado + teste humano Telegram PASS — 2026-06-19
+
+Binário em produção validado: **`acbc32f1`** (supera `ca1a981e`/`712625da`).
+
+- **Causa raiz "flaky" (fechada):** `check_task`/`verify_task`/`get_task_result`/
+  `cancel_task` ecoavam o id consultado mesmo inexistente → o output guard colhia
+  esse eco e "lavava" um id inventado para verificado. Agora ids inexistentes são
+  **mascarados** (`t-aaaab***`, não-colhíveis); ids reais continuam exibidos.
+- **SSE/OpenAI guardado:** `handle_streaming` (`openai_api.rs`) descarta os deltas
+  crus e envia ao cliente **apenas o texto guardado** (o "gap conhecido" anterior
+  está RESOLVIDO).
+- **Teste humano Telegram E2E: PASS** — heartbeat real `t-813d357b40de`,
+  `message_id 369` → chat `7978617919`, `chat_ok=true`, `delivery_scope=origin`,
+  sem `chat_mismatch`, sem vazamento de segredo/token/PII (verificado em
+  tasks.db/ledger/journal).
+- Ajustes de prompt/operacionais/segurança (local): system prompt ganhou
+  PAPEL E AUTORIZAÇÃO (gate de ação externa), ATENDIMENTO (US$/Miami, sem
+  inventar política), SEGURANÇA/PRIVACIDADE; base `CONNECT_CAR_KB.md` (placeholders)
+  consultada de verdade pelo Garra. Sem feature nova; binário inalterado por isso.
+
 ### check_task auditável + monitor sem inferência de timeout + contrato — 2026-06-19
 
 #### Investigação "output guard flaky no Telegram" → guard correto

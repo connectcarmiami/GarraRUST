@@ -4,7 +4,10 @@
 > + `runtime.rs` + `mcp/tool_bridge.rs`), a camada de delegação
 > (`~/.config/garraia/garra_delegation/` ↔ `GarraRUST/ops/garra-delegation/`) e o
 > system prompt (`~/.config/garraia/config.yml`). Atualizado 2026-06-18.
-> Binário em produção validado: `ca1a981e`.
+> Binário em produção validado: `acbc32f1` (output guard + roteamento por origem +
+> SSE guardado + anti-laundering). Teste humano Telegram E2E: **PASS**
+> (heartbeat real `t-813d357b40de`, `message_id 369` → chat 7978617919,
+> `chat_ok=true`, `delivery_scope=origin`, sem `chat_mismatch`).
 
 ## 1. Regra de ouro
 Garra só pode **afirmar** que algo aconteceu se tiver chamado a ferramenta
@@ -47,10 +50,14 @@ que **não** esteja nesse conjunto.
   ambos exibem ids reais do mesmo turno e redigem inventados. Smoke streaming
   (`/v1/chat/completions stream:true`, mesmo caminho do Telegram):
   `list_tasks` → 15 ids reais, **0 redações**.
-- **Atenção (gap conhecido):** o SSE de `/v1/chat/completions` emite os **deltas
-  crus** (não guardados) ao cliente; a guarda se aplica ao texto **retornado/
-  persistido**. No Telegram a edição final usa o texto guardado (seguro). Para
-  clientes OpenAI/SSE, considere guardar o chunk final — rastreado como melhoria.
+- **SSE/OpenAI guardado (corrigido em `acbc32f1`):** `/v1/chat/completions`
+  (stream:true) agora **descarta os deltas crus** e envia ao cliente **apenas o
+  texto guardado** (smoke real: id de memória/laundered → redigido, sem
+  vazamento). No Telegram a edição final já usava o texto guardado.
+- **Anti-laundering (corrigido em `acbc32f1`):** `check_task`/`verify_task`/
+  `get_task_result`/`cancel_task` **mascaram ids inexistentes** (`t-aaaab***`,
+  não-colhíveis pelo guard) — um id inventado roteado por essas tools não é mais
+  "lavado" para verificado; ids reais continuam exibidos.
 
 ## 3. Delegação (evidência real)
 `ask_flash` (Flash = Claude Code) e `ask_alex` (Alex = Hermes/deepseek) criam uma
