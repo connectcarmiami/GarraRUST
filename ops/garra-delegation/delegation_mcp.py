@@ -170,8 +170,12 @@ def check_task(task_id: str) -> str:
     monitor recorrente, que avisa no Telegram quando o status muda."""
     t = ts.get_task(task_id)
     if not t:
-        return (f"Tarefa {task_id} não encontrada (UNVERIFIED — id não existe no store).\n"
-                f"EVIDÊNCIA: {json.dumps({'status':'unknown','verdict':'UNVERIFIED','task_id':task_id}, ensure_ascii=False)}")
+        # Mask the queried id so an invented id cannot be laundered (harvested by
+        # the output guard from this echo) into "verified".
+        mid = ts.mask_taskid(task_id)
+        return (f"Tarefa não encontrada (UNVERIFIED — o id informado {mid} NÃO existe no store). "
+                f"NÃO o cite como real.\n"
+                f"EVIDÊNCIA: {json.dumps({'status':'unknown','verdict':'UNVERIFIED','queried_masked':mid}, ensure_ascii=False)}")
 
     decision = ts.register_check(task_id)
     if not decision.get("allowed"):
@@ -207,7 +211,11 @@ def verify_task(task_id: str) -> str:
     Use isto antes de citar qualquer task_id ao usuário. Retorna PASS (com
     evidência) ou UNVERIFIED (id inexistente — NÃO o apresente como real)."""
     v = ts.verify_identifier(task_id)
-    return f"{v['verdict']} — task {task_id}\nEVIDÊNCIA: {json.dumps(v, ensure_ascii=False)}"
+    if v.get("verdict") == "PASS":
+        return f"PASS — task {task_id} (real)\nEVIDÊNCIA: {json.dumps(v, ensure_ascii=False)}"
+    # UNVERIFIED: never echo the raw id (anti-laundering) — show it masked.
+    return (f"UNVERIFIED — o id informado ({ts.mask_taskid(task_id)}) NÃO existe no store; "
+            f"não o cite como real.\nEVIDÊNCIA: {json.dumps(v, ensure_ascii=False)}")
 
 
 @mcp.tool()
@@ -257,7 +265,7 @@ def get_task_result(task_id: str) -> str:
     """Retorna o RESULTADO COMPLETO de uma tarefa concluída (status succeeded)."""
     t = ts.get_task(task_id)
     if not t:
-        return f"Tarefa {task_id} não encontrada."
+        return f"Tarefa não encontrada (o id informado {ts.mask_taskid(task_id)} não existe)."
     if t["status"] != "succeeded":
         return f"Tarefa {task_id} ainda não concluída (status {t['status']}). {_ev(t)}"
     return f"Resultado da tarefa {task_id} ({t['assigned_agent']}):\n\n{t['result']}\n\n{_ev(t)}"
@@ -280,7 +288,7 @@ def cancel_task(task_id: str) -> str:
     """Cancela uma tarefa em andamento (marca cancelled e encerra o worker)."""
     t = ts.get_task(task_id)
     if not t:
-        return f"Tarefa {task_id} não encontrada."
+        return f"Tarefa não encontrada (o id informado {ts.mask_taskid(task_id)} não existe)."
     if t["status"] in ts.TERMINAL:
         return f"Tarefa {task_id} já está {t['status']}."
     if t["worker_pid"]:

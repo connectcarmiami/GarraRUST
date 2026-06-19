@@ -469,8 +469,13 @@ async fn handle_streaming(
     continuity_key: String,
     user_id: Option<String>,
 ) -> Response<Body> {
-    // Create channel for streaming deltas
-    let (delta_tx, delta_rx) = mpsc::channel::<String>(100);
+    // Create channel for streaming deltas (RAW model output).
+    let (delta_tx, mut delta_rx) = mpsc::channel::<String>(100);
+    // GAR anti-hallucination: SSE/OpenAI clients must receive ONLY the
+    // guard-checked text, never the raw model deltas (which the output guard has
+    // not yet redacted). Raw deltas are drained+discarded below; the guarded
+    // return value is what reaches the client via this channel.
+    let (guarded_tx, guarded_rx) = mpsc::channel::<String>(8);
 
     // Get the user message (last message)
     let user_message = messages
@@ -498,7 +503,10 @@ async fn handle_streaming(
 
     // Spawn task to process streaming and persist the turn when done (GAR-204)
     tokio::spawn(async move {
-        if let Ok(response_text) = state_clone
+        // Drain raw deltas concurrently so the runtime never blocks on a full
+        // channel; DISCARD them — the SSE client only ever sees the guarded text.
+        let drain = tokio::spawn(async move { while delta_rx.recv().await.is_some() {} });
+        let result = state_clone
             .agents
             .process_message_streaming_with_agent_config(
                 &session_id_clone,
@@ -512,8 +520,9 @@ async fn handle_streaming(
                 None,
                 None,
             )
-            .await
-        {
+            .await;
+        let _ = drain.await;
+        if let Ok(response_text) = result {
             // GAR-204: Persist the turn to DB after streaming completes
             state_clone
                 .persist_turn(
@@ -524,6 +533,9 @@ async fn handle_streaming(
                     &response_text,
                 )
                 .await;
+            // Send the GUARD-CHECKED text to the SSE client (raw deltas were
+            // discarded above, so an unverified id can never leak via SSE).
+            let _ = guarded_tx.send(response_text).await;
             // GAR-208: background summarization (fire-and-forget)
             let summ_state = state_clone.clone();
             let summ_session = session_id_clone.clone();
@@ -532,6 +544,7 @@ async fn handle_streaming(
                     .await;
             });
         }
+        // guarded_tx dropped here -> SSE phase 1 sees channel close -> finish
     });
 
     // Prepare SSE streaming response
@@ -548,7 +561,7 @@ async fn handle_streaming(
     // Phase 3 → data: [DONE] sentinel
     // Phase 4 → stream ends
     let stream = stream::unfold(
-        (0u8, Some(delta_rx), chunk_id, created, model),
+        (0u8, Some(guarded_rx), chunk_id, created, model),
         |(phase, mut rx_opt, chunk_id, created, model)| async move {
             match phase {
                 // Phase 0: emit initial chunk establishing role

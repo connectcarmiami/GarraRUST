@@ -414,6 +414,17 @@ def _mask_audit(chat_id, keep=7):
     return s if len(s) <= keep else s[:keep] + "***"
 
 
+def mask_taskid(task_id):
+    """Mask a NON-EXISTENT/UNVERIFIED id so it is shown but NOT harvestable by the
+    output guard (anti-laundering). 't-aaaabbbbcccc' -> 't-aaaab***' (the hex run
+    after 't-' is < 8 chars, so the guard scanner does not treat it as a real id).
+    Real/existing ids are NEVER masked — only ids that failed verification."""
+    s = str(task_id or "")
+    if not s:
+        return "(vazio)"
+    return s if len(s) <= 7 else s[:7] + "***"
+
+
 def audit_metadata(task_id):
     """Masked, secret-free audit view of a task (for delegation__check_task).
 
@@ -423,8 +434,9 @@ def audit_metadata(task_id):
     """
     t = get_task(task_id)
     if not t:
-        return {"task_id": task_id, "exists": False, "verdict": "UNVERIFIED",
-                "reason": "id não existe no task store autorizado"}
+        # Masked, non-harvestable — never echo a non-existent id verbatim.
+        return {"queried_masked": mask_taskid(task_id), "exists": False,
+                "verdict": "UNVERIFIED", "reason": "id não existe no task store autorizado"}
     ld = last_delivered(task_id)                       # confirmed delivery (or None)
     keys = t.keys()
     origin = t["origin_chat_id"] if "origin_chat_id" in keys else None
@@ -466,7 +478,10 @@ def verify_identifier(task_id):
     """
     t = get_task(task_id)
     if not t:
-        return {"verified": False, "verdict": "UNVERIFIED", "task_id": task_id,
+        # Do NOT echo the raw id — that would let an invented id be harvested by
+        # the output guard and laundered into "verified". Show it masked.
+        return {"verified": False, "verdict": "UNVERIFIED",
+                "queried_masked": mask_taskid(task_id),
                 "reason": "identificador não existe no task store autorizado"}
     ev = evidence(t)
     ev.update({"verified": True, "verdict": "PASS"})
