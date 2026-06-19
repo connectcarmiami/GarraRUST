@@ -1929,23 +1929,29 @@ fn trim_messages_to_budget(
     }
 }
 
-/// Build the per-turn verified-identifier set (anti-hallucination) from the
-/// user's own message plus every tool-result block already accumulated in
-/// `messages`. Only `ContentBlock::ToolResult` content is trusted — assistant
-/// prose is never a source of evidence, so a fabricated id from a prior model
-/// turn is never whitelisted.
-fn build_verified_ids(user_text: &str, messages: &[ChatMessage]) -> HashSet<String> {
-    let mut set = HashSet::new();
-    crate::output_guard::collect_verified_ids(user_text, &mut set);
+/// Fold into `set` every operational id that appears in a structured
+/// `ContentBlock::ToolResult` currently in `messages`. Only ToolResult content
+/// is trusted — assistant prose is never a source of evidence, so a fabricated
+/// id from a prior model turn is never whitelisted. This is the literal
+/// "collect verified ids from structured ToolResult before applying the guard".
+fn harvest_tool_results(messages: &[ChatMessage], set: &mut HashSet<String>) {
     for m in messages {
         if let MessagePart::Parts(parts) = &m.content {
             for p in parts {
                 if let ContentBlock::ToolResult { content, .. } = p {
-                    crate::output_guard::collect_verified_ids(content, &mut set);
+                    crate::output_guard::collect_verified_ids(content, set);
                 }
             }
         }
     }
+}
+
+/// Build the per-turn verified-identifier set from the user's own message plus
+/// every tool-result block in the current context window (`messages`).
+fn build_verified_ids(user_text: &str, messages: &[ChatMessage]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    crate::output_guard::collect_verified_ids(user_text, &mut set);
+    harvest_tool_results(messages, &mut set);
     set
 }
 

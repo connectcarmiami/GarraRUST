@@ -267,6 +267,63 @@ mod tests {
         assert_eq!(out.sanitized, resp);
     }
 
+    // ── Realistic delegation ToolResult harvesting (GAR heartbeat-routing) ──
+    fn ask_flash_toolresult(tid: &str, cid: &str) -> String {
+        format!(
+            "🛠️ Tarefa delegada ao Flash e EM EXECUÇÃO de verdade (task_id {tid}, status \
+             running, worker_pid 12345). Consulte agora com `check_task('{tid}')`.\n\
+             EVIDÊNCIA: {{\"task_id\": \"{tid}\", \"agent\": \"flash\", \"status\": \"running\", \
+             \"correlation_id\": \"{cid}\"}}"
+        )
+    }
+
+    #[test]
+    fn req9_1_2_real_taskid_and_corrid_from_toolresult_pass() {
+        let mut v = HashSet::new();
+        collect_verified_ids(&ask_flash_toolresult("t-6f1bb5be20c7", "corr-54dfd2205a"), &mut v);
+        let resp = "✅ Deleguei ao Flash.\n- task_id: t-6f1bb5be20c7\n- correlation_id: corr-54dfd2205a";
+        let out = enforce(resp, &v);
+        assert!(out.removed.is_empty(), "real delegation ids were redacted: {:?}", out.removed);
+        assert!(out.sanitized.contains("t-6f1bb5be20c7"));
+        assert!(out.sanitized.contains("corr-54dfd2205a"));
+    }
+
+    #[test]
+    fn req9_3_invented_taskid_redacted_even_beside_a_real_one() {
+        let mut v = HashSet::new();
+        collect_verified_ids(&ask_flash_toolresult("t-6f1bb5be20c7", "corr-54dfd2205a"), &mut v);
+        let resp = "real t-6f1bb5be20c7; inventado t-7f4e2c9a1b8d.";
+        let out = enforce(resp, &v);
+        assert_eq!(out.removed, vec!["t-7f4e2c9a1b8d".to_string()]);
+        assert!(out.sanitized.contains("t-6f1bb5be20c7"));
+    }
+
+    #[test]
+    fn req9_4_lookalike_but_different_taskid_redacted() {
+        let mut v = HashSet::new();
+        collect_verified_ids(&ask_flash_toolresult("t-6f1bb5be20c7", "corr-54dfd2205a"), &mut v);
+        let resp = "task_id t-6f1bb5be20c8"; // last hex differs
+        let out = enforce(resp, &v);
+        assert_eq!(out.removed, vec!["t-6f1bb5be20c8".to_string()]);
+    }
+
+    #[test]
+    fn req9_6_list_tasks_ids_pass() {
+        let listing = "2 tarefa(s):\n- t-6f1bb5be20c7 [running] flash :: x\n\
+                       - t-a1b2c3d4e5f6 [succeeded] alex :: y";
+        let mut v = HashSet::new();
+        collect_verified_ids(listing, &mut v);
+        let out = enforce("Ativas: t-6f1bb5be20c7 e t-a1b2c3d4e5f6.", &v);
+        assert!(out.removed.is_empty(), "list_tasks ids redacted: {:?}", out.removed);
+    }
+
+    #[test]
+    fn req9_7_model_written_id_without_toolresult_is_redacted() {
+        let v = HashSet::new(); // no tool result this turn
+        let out = enforce("Criei a task t-1234567890ab.", &v);
+        assert_eq!(out.removed, vec!["t-1234567890ab".to_string()]);
+    }
+
     #[test]
     fn invented_task_id_is_redacted() {
         // The exact ids the model fabricated for Connect Car, with no evidence.
