@@ -325,6 +325,38 @@ mod tests {
     }
 
     #[test]
+    fn spec_named_lookalike_one_hex_char_different_is_redacted() {
+        // The MEANINGFUL look-alike: a valid 12-hex id differing from the real
+        // one by a single hex char. It is id-shaped but not verified -> REDACTED.
+        // The real id still passes. (The real protection against "parecido".)
+        let v = set(&["t-503bb9c8373f"]);
+        let out = enforce("real t-503bb9c8373f vs parecido t-503bb9c8373a", &v);
+        assert!(out.sanitized.contains("t-503bb9c8373f"), "real id redacted: {:?}", out.sanitized);
+        assert!(!out.sanitized.contains("t-503bb9c8373a"), "look-alike leaked: {:?}", out.sanitized);
+        assert_eq!(out.removed, vec!["t-503bb9c8373a".to_string()]);
+    }
+
+    #[test]
+    fn spec_named_malformed_fakes_are_not_id_shaped() {
+        // Documents the exact, honest behaviour of the two spec-named fakes:
+        // - "t-falso123": l/s/o are not hex -> no id span.
+        // - "t-503bb9c8373g": 11 hex then a non-hex 'g' (no right boundary) ->
+        //   no id span.
+        // Neither is the real id shape, so the scanner leaves them as LITERAL
+        // text (NOT redactions). We deliberately do NOT broaden the t- regex
+        // (no relaxing/widening). The semantic layer (verify_identifier /
+        // check_task) returns UNVERIFIED for both, which is the real guarantee
+        // that they are never treated as real task ids.
+        let v = HashSet::new();
+        for fake in ["t-falso123", "t-503bb9c8373g"] {
+            let text = format!("a suposta task {fake} é falsa");
+            let out = enforce(&text, &v);
+            assert!(out.removed.is_empty(), "unexpected redaction of {fake}: {:?}", out.removed);
+            assert_eq!(out.sanitized, text);
+        }
+    }
+
+    #[test]
     fn invented_task_id_is_redacted() {
         // The exact ids the model fabricated for Connect Car, with no evidence.
         let verified = set(&[]);
