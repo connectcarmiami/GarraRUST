@@ -404,6 +404,70 @@ def evidence(task):
     }
 
 
+# ── Auditable, masked, secret-free metadata for check_task ────────────────────
+
+def _mask_audit(chat_id, keep=7):
+    """Keep the first `keep` chars + '***' (ex.: 7978617919 -> 7978617***)."""
+    s = str(chat_id or "")
+    if not s:
+        return None
+    return s if len(s) <= keep else s[:keep] + "***"
+
+
+def mask_taskid(task_id):
+    """Mask a NON-EXISTENT/UNVERIFIED id so it is shown but NOT harvestable by the
+    output guard (anti-laundering). 't-aaaabbbbcccc' -> 't-aaaab***' (the hex run
+    after 't-' is < 8 chars, so the guard scanner does not treat it as a real id).
+    Real/existing ids are NEVER masked — only ids that failed verification."""
+    s = str(task_id or "")
+    if not s:
+        return "(vazio)"
+    return s if len(s) <= 7 else s[:7] + "***"
+
+
+def audit_metadata(task_id):
+    """Masked, secret-free audit view of a task (for delegation__check_task).
+
+    Never exposes tokens. Chat ids are masked (first-7 + '***'). `chat_ok`/
+    `message_id_present` come from the delivery ledger (real evidence), not
+    inference. Returns verdict UNVERIFIED when the id does not exist.
+    """
+    t = get_task(task_id)
+    if not t:
+        # Masked, non-harvestable — never echo a non-existent id verbatim.
+        return {"queried_masked": mask_taskid(task_id), "exists": False,
+                "verdict": "UNVERIFIED", "reason": "id não existe no task store autorizado"}
+    ld = last_delivered(task_id)                       # confirmed delivery (or None)
+    keys = t.keys()
+    origin = t["origin_chat_id"] if "origin_chat_id" in keys else None
+    notify_c = t["notify_chat_id"]
+    result = t["result"] or ""
+    chat_ids_match = bool(origin and notify_c and str(origin) == str(notify_c))
+    if ld is None:
+        chat_ok = None                                 # sem entrega confirmada — não afirmar
+    else:
+        chat_ok = bool(notify_c and ld["chat_masked"]
+                       and str(notify_c).endswith(str(ld["chat_masked"])[-4:]))
+    return {
+        "exists": True, "verdict": "PASS",
+        "task_id": t["task_id"],                       # id real (vindo do store)
+        "status": t["status"],
+        "has_result": bool(result),
+        "created_at": t["created_at"],
+        "completed_at": t["finished_at"],
+        "error": (t["error"] or None),
+        "result_ref": (f"task:{t['task_id']}:result" if result else None),
+        "result_summary": ((result[:160] + ("…" if len(result) > 160 else "")) if result else None),
+        "origin_chat_id_masked": _mask_audit(origin),
+        "notify_chat_id_masked": _mask_audit(notify_c),
+        "chat_ids_match": chat_ids_match,
+        "delivery_scope": t["delivery_scope"] if "delivery_scope" in keys else None,
+        "message_id_present": bool(ld and ld["message_id"]),
+        "message_id": (ld["message_id"] if ld else None),
+        "chat_ok": chat_ok,
+    }
+
+
 # ── Evidence binding: an identifier is real ONLY if it is in this store ───────
 
 def verify_identifier(task_id):
@@ -414,7 +478,10 @@ def verify_identifier(task_id):
     """
     t = get_task(task_id)
     if not t:
-        return {"verified": False, "verdict": "UNVERIFIED", "task_id": task_id,
+        # Do NOT echo the raw id — that would let an invented id be harvested by
+        # the output guard and laundered into "verified". Show it masked.
+        return {"verified": False, "verdict": "UNVERIFIED",
+                "queried_masked": mask_taskid(task_id),
                 "reason": "identificador não existe no task store autorizado"}
     ev = evidence(t)
     ev.update({"verified": True, "verdict": "PASS"})
