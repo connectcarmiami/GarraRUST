@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Output guard: IDs reais de delegação exibíveis (contrato de teste) — 2026-06-18
+
+Investigação da queixa "o guard redige task_id/correlation_id reais". **Não havia
+bug no mesmo turno**: smoke no binário implantado (`ca1a981e`, via `POST
+/api/sessions/{id}/messages`) mostrou `delegation__list_tasks` com 15 task_ids
+reais e `delegation__ask_flash` com `t-2ebba275fc28` — sem redação. A redação
+observada era o caso **cross-turn**: `hydrate_session_history` reconstrói o
+histórico só como texto (sem blocos `ToolResult`), então a evidência sobrevive
+apenas dentro do turno; citar um id de turno anterior, de memória e sem rechamar
+ferramenta, é corretamente redigido (allowlist por-turno, nunca global, nunca
+gravável pelo modelo).
+
+**Regra operacional:** para citar um `task_id`/`correlation_id` de uma mensagem
+anterior, RE-CONSULTE com `delegation__list_tasks`/`check_task` nesta interação
+(o id volta num `ToolResult` fresco → passa) e copie-o VERBATIM da EVIDÊNCIA.
+Registrada no system prompt do Garra.
+
+#### Added
+- `output_guard.rs`: testes req-9 no formato real de ToolResult (task_id +
+  correlation_id reais passam; inventado redige; parecido-mas-diferente redige;
+  ids de `list_tasks` passam; id sem ToolResult redige).
+- `tests/output_guard_delegation.rs`: testes no loop real (same-turn passa /
+  prior-turn-texto redige).
+- `runtime.rs`: `harvest_tool_results()` — coleta ids de `ToolResult` estruturado
+  antes do guard (neutro em comportamento).
+
+### Heartbeat/notificação: roteamento para o chat de origem — 2026-06-18
+
+#### Causa raiz
+Notificações de delegação (heartbeat, conclusão de tarefa) chegavam sempre no
+chat do owner (`8890643175`), não na conversa atual (ex. `7978617919`). Dois
+problemas: (1) `delegation_mcp.py::_delegate()` fixava
+`notify_chat_id=notify.owner_chat()`; (2) — mais profundo — o binário `garra`
+**nunca repassava o contexto da conversa** ao servidor MCP `delegation`
+(`McpTool::execute` enviava só os argumentos do modelo), então a camada Python
+não tinha como saber o chat de origem.
+
+#### Fixed / Added
+- **Rust** (`crates/garraia-agents/src/mcp/tool_bridge.rs`): injeta
+  `garra_origin_chat_id` (= user id autenticado do Telegram, == chat_id em chat
+  privado) e `garra_session_id` nas chamadas de ferramentas `delegation__*`,
+  **sobrescrevendo** qualquer valor do modelo (sem spoofing). Escopo restrito a
+  `delegation__` (outros servidores MCP podem rejeitar args desconhecidos). 5
+  testes unit.
+- **Python** (`ops/garra-delegation/`): `_resolve_routing()` — a origem
+  autenticada/autorizada SEMPRE vence; `owner_chat()` só como fallback
+  (`delivery_scope='fallback_owner'`). `create_task` persiste `origin_chat_id`,
+  `origin_channel`, `bot_id`, `message_thread_id`, `delivery_scope`. `monitor.py`
+  entrega ao `task.notify_chat_id` e valida **chat_mismatch** (via
+  `delivered_chat_id` real do Telegram) antes de marcar `delivered`. 7 testes
+  (`tests/test_heartbeat_routing.py`).
+
+#### Validação E2E (real)
+- Monitor de produção → mensagem real `message_id` **312** no chat **7978617919**
+  (não no owner). Caminho MCP (FastMCP `schedule_heartbeat` com origem injetada)
+  → `message_id` **313** no chat **7978617919**, `delivery_scope=origin`.
+
+#### Deploy / rollback
+- Binário recompilado `ca1a981e…` (preserva a guarda anti-alucinação) e
+  implantado; gateway reiniciado. Rollback do binário:
+  `cp ~/garra-fix/backups/antihallucination-20260618-120937/garraia.binary.bak ~/.local/bin/garraia && systemctl --user restart garraia.service`.
+  Backup desta correção: `~/garra-fix/backups/heartbeat-routing-20260618-184748/`.
+
 ### Anti-hallucination output guard (operacional) — 2026-06-18
 
 Tag operacional: `anti-hallucination-guard-2026-06-18`.

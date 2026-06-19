@@ -65,7 +65,27 @@ def _ev(task):
     return "EVIDÊNCIA: " + json.dumps(ts.evidence(task), ensure_ascii=False)
 
 
-def _delegate(agent, message, capability):
+def _resolve_routing(origin_chat_id):
+    """Decide where notifications for this task go.
+
+    The conversation's real origin (when authenticated/authorized) ALWAYS wins;
+    the owner chat is ONLY a fallback when there is no usable origin
+    (delivery_scope='fallback_owner'). This is the fix for notifications landing
+    in the hardcoded owner chat instead of the chat the request came from.
+    """
+    authd = notify.authorized_chats()
+    oc = str(origin_chat_id).strip() if origin_chat_id else ""
+    bid = notify.bot_id()
+    if oc and oc in authd:
+        return {"origin_chat_id": oc, "notify_chat_id": oc, "origin_channel": "telegram",
+                "bot_id": bid, "message_thread_id": None, "delivery_scope": "origin"}
+    # no origin (or an origin we won't deliver to) -> owner, clearly flagged
+    return {"origin_chat_id": oc or None, "notify_chat_id": notify.owner_chat(),
+            "origin_channel": "telegram" if oc else None, "bot_id": bid,
+            "message_thread_id": None, "delivery_scope": "fallback_owner"}
+
+
+def _delegate(agent, message, capability, origin_chat_id=None, origin_session_id=None):
     pf = cap.preflight(agent, capability=capability, message=message)
     if not pf["ok"]:
         return (f"⚠️ Não deleguei ao {agent.capitalize()}: {pf['reason']}.\n"
@@ -73,9 +93,13 @@ def _delegate(agent, message, capability):
                 f"EVIDÊNCIA: {json.dumps({'action':'delegate.preflight','status':'blocked','agent':agent,'reason':pf['reason']}, ensure_ascii=False)}")
 
     timeout = FLASH_TIMEOUT if agent == "flash" else ALEX_TIMEOUT
+    r = _resolve_routing(origin_chat_id)
     task, reused = ts.create_task("garra", agent, capability, message,
-                                  timeout_secs=timeout, notify_chat_id=notify.owner_chat(),
-                                  monitor=True)
+                                  timeout_secs=timeout, notify_chat_id=r["notify_chat_id"],
+                                  monitor=True, origin_chat_id=r["origin_chat_id"],
+                                  origin_channel=r["origin_channel"], bot_id=r["bot_id"],
+                                  message_thread_id=r["message_thread_id"],
+                                  delivery_scope=r["delivery_scope"])
     tid = task["task_id"]
 
     if reused:
@@ -106,28 +130,35 @@ def _delegate(agent, message, capability):
 
 
 @mcp.tool()
-def ask_flash(message: str) -> str:
+def ask_flash(message: str, garra_origin_chat_id: str = "", garra_session_id: str = "") -> str:
     """Delega uma tarefa de ENGENHARIA ao Flash (Claude Code) — lê/escreve código,
     roda comandos, configura, depura e conserta. NÃO bloqueia: cria uma tarefa
     rastreável (task_id) executada por um worker real; tarefas curtas já retornam a
     resposta; tarefas longas seguem com monitor. Sempre retorna evidência (task_id,
-    status). NUNCA afirme que o Flash está trabalhando sem o task_id desta resposta."""
+    status). NUNCA afirme que o Flash está trabalhando sem o task_id desta resposta.
+
+    NÃO preencha garra_origin_chat_id/garra_session_id: são INJETADOS pelo sistema
+    (o chat real da conversa) para que as notificações voltem ao mesmo chat."""
     msg = (message or "").strip()
     if not msg:
         return "Erro: mensagem vazia — diga o que pedir ao Flash."
-    return _delegate("flash", msg, "engineering")
+    return _delegate("flash", msg, "engineering",
+                     origin_chat_id=garra_origin_chat_id, origin_session_id=garra_session_id)
 
 
 @mcp.tool()
-def ask_alex(message: str) -> str:
+def ask_alex(message: str, garra_origin_chat_id: str = "", garra_session_id: str = "") -> str:
     """Delega ao Alex (assistente especialista Hermes/deepseek) tarefas de ANÁLISE,
     planejamento, coordenação e escrita. Atenção: o Alex NÃO tem Gmail/Calendar/
     Telegram — pedidos de e-mail são recusados e redirecionados para as ferramentas
-    da própria Garra. Retorna task_id + status + evidência (sem inventar progresso)."""
+    da própria Garra. Retorna task_id + status + evidência (sem inventar progresso).
+
+    NÃO preencha garra_origin_chat_id/garra_session_id: são INJETADOS pelo sistema."""
     msg = (message or "").strip()
     if not msg:
         return "Erro: mensagem vazia — diga o que perguntar ao Alex."
-    return _delegate("alex", msg, "analysis")
+    return _delegate("alex", msg, "analysis",
+                     origin_chat_id=garra_origin_chat_id, origin_session_id=garra_session_id)
 
 
 @mcp.tool()
@@ -177,34 +208,45 @@ def verify_task(task_id: str) -> str:
 
 
 @mcp.tool()
-def schedule_heartbeat(note: str = "ping") -> str:
+def schedule_heartbeat(note: str = "ping", garra_origin_chat_id: str = "",
+                       garra_session_id: str = "") -> str:
     """Registra um heartbeat REAL do monitor Python (NÃO o schedule_heartbeat
     nativo do binário Rust, que nunca persistia). Cria uma tarefa rastreável,
-    entrega uma notificação no Telegram e persiste o message_id real. Retorna o
-    task_id (consultável com check_task) e a evidência de entrega."""
+    entrega uma notificação no Telegram NO CHAT DA CONVERSA (não no owner fixo) e
+    persiste o message_id real, validando que o chat de entrega bate com o destino.
+
+    NÃO preencha garra_origin_chat_id/garra_session_id: são INJETADOS pelo sistema."""
     msg = (note or "ping").strip()[:500]
+    r = _resolve_routing(garra_origin_chat_id)
     task, reused = ts.create_task("garra", "monitor", "heartbeat", msg,
-                                  timeout_secs=60, notify_chat_id=notify.owner_chat(),
-                                  monitor=False)
+                                  timeout_secs=60, notify_chat_id=r["notify_chat_id"],
+                                  monitor=False, origin_chat_id=r["origin_chat_id"],
+                                  origin_channel=r["origin_channel"], bot_id=r["bot_id"],
+                                  message_thread_id=r["message_thread_id"],
+                                  delivery_scope=r["delivery_scope"])
     tid = task["task_id"]
     if reused:
         return (f"♻️ Heartbeat equivalente recente (task_id {tid}). {_ev(ts.get_task(tid))}")
     ts.mark_running(tid)
-    chat = notify.owner_chat()
+    chat = r["notify_chat_id"]
     masked = notify.mask_chat(chat)
     ts.record_notification(tid, "delivery_pending", chat_masked=masked, attempt=1, kind="heartbeat")
     res = notify.send_message(chat, f"💓 Heartbeat Garra (monitor Python): {msg}")
-    if res.get("ok") and res.get("message_id") is not None:
+    delivered = bool(res.get("ok") and res.get("message_id") is not None)
+    mismatch = delivered and res.get("delivered_chat_id") not in (None, str(chat))
+    if delivered and not mismatch:
         ts.record_notification(tid, "delivered", chat_masked=masked,
                                message_id=res["message_id"], attempt=1, kind="heartbeat")
-        ts.mark_succeeded(tid, f"heartbeat entregue (message_id {res['message_id']})")
-        return (f"✅ Heartbeat entregue (task_id {tid}, message_id {res['message_id']} → {masked}).\n"
-                f"{_ev(ts.get_task(tid))}")
+        ts.mark_succeeded(tid, f"heartbeat entregue (message_id {res['message_id']} "
+                               f"→ chat {chat}, scope {r['delivery_scope']})")
+        return (f"✅ Heartbeat entregue (task_id {tid}, message_id {res['message_id']} → {masked}, "
+                f"scope {r['delivery_scope']}).\n{_ev(ts.get_task(tid))}")
+    err = "chat_mismatch" if mismatch else res.get("error")
     ts.record_notification(tid, "delivery_failed", chat_masked=masked, attempt=1,
-                           error=res.get("error"), kind="heartbeat")
-    ts.mark_failed(tid, f"heartbeat NÃO entregue: {res.get('error')}")
-    return (f"❌ Heartbeat NÃO entregue (task_id {tid}): {res.get('error')}. "
-            f"Não afirmei entrega sem message_id.\n{_ev(ts.get_task(tid))}")
+                           error=err, kind="heartbeat")
+    ts.mark_failed(tid, f"heartbeat NÃO entregue: {err}")
+    return (f"❌ Heartbeat NÃO entregue (task_id {tid}): {err}. "
+            f"Não afirmei entrega sem message_id válido no chat certo.\n{_ev(ts.get_task(tid))}")
 
 
 @mcp.tool()
