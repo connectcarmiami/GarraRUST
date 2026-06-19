@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Output guard: IDs reais de delegação exibíveis (contrato de teste) — 2026-06-18
+
+Investigação da queixa "o guard redige task_id/correlation_id reais". **Não havia
+bug no mesmo turno**: smoke no binário implantado (`ca1a981e`, via `POST
+/api/sessions/{id}/messages`) mostrou `delegation__list_tasks` com 15 task_ids
+reais e `delegation__ask_flash` com `t-2ebba275fc28` — sem redação. A redação
+observada era o caso **cross-turn**: `hydrate_session_history` reconstrói o
+histórico só como texto (sem blocos `ToolResult`), então a evidência sobrevive
+apenas dentro do turno; citar um id de turno anterior, de memória e sem rechamar
+ferramenta, é corretamente redigido (allowlist por-turno, nunca global, nunca
+gravável pelo modelo).
+
+**Regra operacional:** para citar um `task_id`/`correlation_id` de uma mensagem
+anterior, RE-CONSULTE com `delegation__list_tasks`/`check_task` nesta interação
+(o id volta num `ToolResult` fresco → passa) e copie-o VERBATIM da EVIDÊNCIA.
+Registrada no system prompt do Garra.
+
+#### Added
+- `output_guard.rs`: testes req-9 no formato real de ToolResult (task_id +
+  correlation_id reais passam; inventado redige; parecido-mas-diferente redige;
+  ids de `list_tasks` passam; id sem ToolResult redige).
+- `tests/output_guard_delegation.rs`: testes no loop real (same-turn passa /
+  prior-turn-texto redige).
+- `runtime.rs`: `harvest_tool_results()` — coleta ids de `ToolResult` estruturado
+  antes do guard (neutro em comportamento).
+
 ### Heartbeat/notificação: roteamento para o chat de origem — 2026-06-18
 
 #### Causa raiz
